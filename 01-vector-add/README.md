@@ -18,8 +18,6 @@
 | 1<<24        | 512        | 4.37062       | 0.42141       | ~10        |
 | 1<<30        | 512        | 273.465       | 15.4046       | ~18        |
 
-*(Fill in your actual numbers; highlight the best GPU config for each N.)*
-
 ## Places I messed up
 - Getting used to looking for the `;` delimiters. Been away from C++ for too long
 - Catching the segfaults came from deleting the arrays by accident before giving it to the device code
