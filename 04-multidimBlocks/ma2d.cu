@@ -20,7 +20,7 @@ int main() {
     float h_B[N * N];
     float h_C[N * N];
     for (int i = 0; i < (N*N); i++){
-        h_A[i] = 1;
+        h_A[i] = 2;
         h_B[i] = 2;
         h_C[i] = 5;
     }
