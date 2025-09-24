@@ -54,7 +54,7 @@ int main() {
     cudaMemcpy(d_pixTensor, h_pixTensor.data(), bytes, cudaMemcpyHostToDevice);
 
     // Figure out the block size I want and how many threads to launch
-    dim3 block(16, 64, 1);
+    dim3 block(8, 16, 1);
     dim3 grid(
         (dim_x+block.x-1)/block.x,
         (dim_y+block.x-1)/block.y,
