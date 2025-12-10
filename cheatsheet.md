@@ -56,6 +56,15 @@ Max Texture 2D Size:                131072 x 65536
 Max Texture 3D Size:                16384 x 16384 x 16384
 ```
 
+## Compilation and profiling
+- `nvcc -Xptxas -maxrregcount=24 --ptxas-options=-v vector_add_wasteful-registers.cu -o vector_add_wasteful-registers_reg24_bs128`
+- `sudo ncu ./executable`
+- `sudo ncu --set full --export roofline ./executable`
+  - Then inspect it with `ncu-ui roofline.ncu-rep`
+  - Go to the "details" tab
+  - Check the many sections here
+- `ncu --set full ./saxpy`
+
 
 ## **Goals**
 
