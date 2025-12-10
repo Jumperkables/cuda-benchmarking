@@ -1,20 +1,9 @@
-# 03 Mental Model
-I'm at the point where I can make my first mental model of GPUs and CUDA all in one spot. I'll make:
-- A diagram
-- A metaphor
+# **CUDA Kernel Design Checklist**
 
-That helps me understand whats going on here.
-
-## Ballpark numbers
-Its good to internalise a scale of how many SMs etc there are on various cards.
-- See [my device query code](../00_deviceQuery) printing out my GPU info:
-
-#### Most modern architectures
-- Max number of warps / SM: 64
-- Theoretical max number of warps / SM in practice: <64 (~48 or so)
-
-#### 3090:
 ```
+=======================================================
+Device 0: "NVIDIA GeForce RTX 3090"
+=======================================================
 Compute Capability:                 8.6
 UUID:                               5c57ee1534b0285a574850b4b0975c8c
 Streaming Multiprocessors (SMs):    82
@@ -31,11 +20,19 @@ Total Constant Memory:              65536 bytes
 Global Memory:                      25286672384 bytes
 Memory Bus Width:                   384 bits
 L2 Cache Size:                      6291456 bytes
-```
+Concurrent Kernels:                 Yes
+ECC Enabled:                        No
+Async Engine Count (DMA engines):   2
+Unified Addressing:                 Yes
+Max Texture 1D Size:                131072
+Max Texture 2D Size:                131072 x 65536
+Max Texture 3D Size:                16384 x 16384 x 16384
 
-#### 5060ti:
-```
+=======================================================
+Device 1: "NVIDIA GeForce RTX 5060 Ti"
+=======================================================
 Compute Capability:                 12.0
+UUID:                               077cc6652f3c22978546435c875801c6
 Streaming Multiprocessors (SMs):    36
 Warp Size:                          32
 Max Threads / SM:                   1536
@@ -50,8 +47,166 @@ Total Constant Memory:              65536 bytes
 Global Memory:                      16617897984 bytes
 Memory Bus Width:                   128 bits
 L2 Cache Size:                      33554432 bytes
+Concurrent Kernels:                 Yes
+ECC Enabled:                        No
+Async Engine Count (DMA engines):   2
+Unified Addressing:                 Yes
+Max Texture 1D Size:                131072
+Max Texture 2D Size:                131072 x 65536
+Max Texture 3D Size:                16384 x 16384 x 16384
 ```
 
+
+## **Goals**
+
+* Write kernels whose **instruction mix** and **memory behavior** allow ALUs and memory bandwidth to be well utilized.
+* Ensure **enough active warps** to hide latency.
+* Avoid unnecessary consumption of registers/shared memory that reduces resident warps or blocks.
+
+---
+
+# **1. Register Usage**
+
+**Hardware limits (per SM):**
+
+* **65,536 registers**
+* **1536 threads**
+* **48 warps**
+* **Register allocation granularity = 8 registers/thread**
+
+**Guidelines:**
+
+* Aim for **≤ 40 registers per thread**
+  (`65536 regs / 1536 threads ≈ 42.6`, rounded down to the nearest 8 = **40**)
+* Allow higher if reducing registers causes **spills** (benchmark both versions).
+* Monitor impact on:
+
+  * number of resident blocks
+  * number of resident warps
+  * achieved occupancy
+
+---
+
+# **2. Block Size Selection**
+
+**Hardware limits:**
+
+* Max threads per block: **1024**
+* Max threads per SM: **1536**
+* Max blocks per SM: **16**
+* Warp size: **32**
+
+**Guidelines:**
+
+* Block size must be a **multiple of 32**.
+* Avoid very small blocks (< **96** threads).
+  (`1536 / 16 = 96` → smaller wastes SM block slots.)
+* Prefer block sizes that **divide 1536 cleanly**:
+
+  * **128, 192, 256, 384, 512** (all map nicely to 48 warps)
+* Be cautious with **1024-thread blocks**:
+
+  * Only 1 block/SM → 32 warps → lower theoretical occupancy.
+* Powers of 2 are **not required** by hardware.
+
+  * But convenient for algorithms with halve-and-shift reduction patterns.
+
+---
+
+# **3. Occupancy and Warp Count**
+
+**Hardware limits (per SM):**
+
+* Max threads: **1536**
+* Max warps: **48**
+
+Occupancy goals:
+
+* ≥ **16–24 warps** usually hide latency well.
+* ≥ **32 warps** is often indistinguishable from full occupancy.
+* Full occupancy (48/48) is **not required** for peak performance.
+
+Focus on:
+
+* having “enough” warps,
+* not chasing maximum warps.
+
+---
+
+# **4. Shared Memory Usage**
+
+**Hardware shared memory limits:**
+
+* Shared memory per block: **49,152 bytes** (48 KB)
+* Shared memory per SM: **102,400 bytes** (~100 KB)
+
+**Effects:**
+
+* Shared memory is allocated **per block**.
+* Blocks with high shared-memory use reduce:
+
+  * blocks per SM
+  * warps per SM
+  * theoretical occupancy
+
+**Guidelines:**
+
+* Allocate only what is needed.
+* Prefer patterns that heavily **reuse** SMEM.
+* Profile SMEM pressure in Nsight Compute (Launch Stats → SMEM usage).
+
+---
+
+# **5. Algorithmic Behavior — TODO**
+
+I will fill this section after learning:
+
+* Memory coalescing
+* Memory hierarchy behavior (L1, L2, cache thrashing)
+* Shared-memory bank conflicts
+* Global→shared tiling
+* Divergence reduction strategies
+* Warp-level primitives (`__shfl_sync`, `__ballot_sync`)
+* Reconvergence model
+
+This section will eventually become one of the most important.
+
+---
+
+# **6. Occupancy Isn’t Everything**
+
+Once you have enough resident warps to hide latency:
+
+* Focus shifts to reducing total **instructions**.
+* Improve **memory efficiency** (coalescing, tiling, caching).
+* Minimize **branch divergence**.
+* Minimize **redundant loads/stores**.
+* Improve **arithmetic intensity**.
+
+These optimizations often yield more benefit than increasing occupancy.
+
+---
+
+# **7. Profiling Checklist (Nsight Compute)**
+
+Always verify:
+
+* Register usage
+* Shared memory usage
+* Blocks per SM
+* Warps per SM (theoretical + achieved)
+* Warp stall reasons
+* L1/L2 hit rates
+* Memory throughput %
+* ALU utilization %
+* Divergence metrics
+* DRAM read/write footprint
+
+Use measurements to guide kernel design, not assumptions.
+
+---
+
+## Military mental model I made
 ## [2025-12-10] Updated Mental Model - Military Operation
 - Yesterday's kitchen analogy was slightly flawed, because I thought of each of the threads in the warp as units of work, as opposed to the workers themselves. It would be more apt to deliver workers than burgers.
 - So, an improved analogy might be a military operation:
@@ -135,45 +290,3 @@ Common pitfalls:
     - The `block` boat size is too small, this is VERY easy to do:
       - `1536 max threads per SM / 16 max blocks per SM = 96 threads per block`
       - If i pick anything under `96 threads per block`, I'm leaving threads on the table
-
-
-
-## Previous [2025-12-09] Mental Model - Kitchen Analogy - FLAWED
-- A GPU is a collection of kitchens making food
-- I can already see this analogy won't be perfect, but it will be a good test of my knowledge and understanding to articulate where the analogy falls down, and what would be a more apt variant
-
-**Hardware:**
-- Each `SM` is a kitchen
-- The 3090 food inc factory has `82` kitchens making food
-  - The more kitchens, the more food you can make on average
-- 4 `warp schedulers` in a kitchen. These are the head chefs.
-- `Registers` are like tool slots near a table
-  - Theres enough for `32` tool slots per WORKER. NOT per TABLE
-    - Remember there are `32`
-
-**Software:**
-- The `kernel` i write is the type of food
-  - `Simpler kernels` is like easy cook food - pasta
-  - `Complex kernels` is like complicated food - burgers
-- When i write a `kernel`, what I'm doing is writing instructions for food I want cooked thats going to be executed millions of times across all the kitchens
-- `Blocks` are trucks of food that come in
-- `Warps` are the boxes in the truck.
-- `Threads` are the individual workers.
-
-**Constraints:**
-- `Always 32 threads in a warp`
-  - Doesn't matter what the foodstuff, or how loaded the truck is. There are always 32 workers worth of food to prepare in each box. We underfill boxes if there aren't enough for a final box at the end.
-- `Max threads / block = 2048`
-  - `Blocks` only get so big because its impractical to make them bigger. The amount of work they would hold would become cumbersome
-  - Trucks could be made huge. but realistically, we have a limited amount of space for parking. I don't know how to adapt this analogy further for why blocks aren't bigger
-  - Each `block` can hold up to 2048 `threads` or `2048/32 = 64 warps`.
-  - Each truck can hold up to 2048 foodstuffs, or at absolute most 64 boxes of food.
-- `Max blocks / SM = 16`
-  - Hard architectural limit
-  - There are 16 parking spots outside each kitchen. Never more. Doesn't matter how lightly you load the trucks. 
-- `Max hardware allowed warps active = 64`
-  - There are 64 tables inside each kitchen
-  - The maximum amount you can use at any one time depends on a few things
-
-### Where the Kitchen analogy fails
-- Actually, the threads are the workers, not the individual foodstuffs. I would repeat this analogy tomorrow to fix it.
