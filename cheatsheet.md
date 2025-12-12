@@ -215,7 +215,12 @@ Use measurements to guide kernel design, not assumptions.
 
 ---
 
-## Military mental model I made
+# Military mental model I made
+## Updates I need to make to the analogy:
+- [2025-12-12]: While doing matmul i discovered that you can have underfilled warps, if you define a block size of 1.
+  - This only launches 1 THREAD per block, which goes to 32 lanes (warp)
+  - My analogy needs to define closely that the 32 lanes are the warp, and that sometimes less soldiers can be deployed than 32
+
 ## [2025-12-10] Updated Mental Model - Military Operation
 - Yesterday's kitchen analogy was slightly flawed, because I thought of each of the threads in the warp as units of work, as opposed to the workers themselves. It would be more apt to deliver workers than burgers.
 - So, an improved analogy might be a military operation:
