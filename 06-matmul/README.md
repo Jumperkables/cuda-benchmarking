@@ -2,7 +2,6 @@
 Now to move onto the bigger guns. I'll start with a naive implementation of a simpler case to tst my CUDA coding skills
 
 ## TODO before moving on
-- Vary block size
 - Vary `K`
 - Try pragma unroll
 - And note the changes
@@ -37,7 +36,68 @@ C[(row_idx * N) + col_idx] = acc;
 ```
 - `FLOPs ~= 2 * M * K * N`
   - From `acc += ..` and `A[..] + B[..]`
-- `GFLOP/s`
+  - `= 2 * 4000 * **2000** * 3000`
+  - `= 48 GFLOP`
+  - `t = 26.99ms`
+- `GFLOP/s = 1,778 GFLOP/s = 1.78 TFlop/s`
+
+#### Play with grid size:
+- `8 x 8`
+  - Duration = `28.72ms`
+  - Occupancy problem: Max theoretical = 32 = `67% occ`
+- `8 x 4`
+  - Duration = `54.05ms`
+  - Occupancy problem: Max theoretical = 16 = `33% occ`
+- `16 x 16`
+  - Duration = `26.99ms`
+  - Occupancy problem: Max theory = 48 = 100% occ
+  - Compute throughput = `97.5%`
+  - DRAM throughput = `25.07%`
+- `32 x 8`
+  - Duration = `27.26ms`
+  - 100% occ
+- `8 x 32`
+  - Duration = `27.90ms`
+  - 100% occ
+
+### Lesson in profiling:
+```
+----------------------- ----------- -------------
+Metric Name             Metric Unit  Metric Value
+----------------------- ----------- -------------
+DRAM Frequency                  Ghz          9.49
+SM Frequency                    Ghz          1.39
+Elapsed Cycles                cycle    37,680,872
+Memory Throughput                 %         97.50
+DRAM Throughput                   %         25.07
+Duration                         ms         27.01
+L1/TEX Cache Throughput           %         97.55
+L2 Cache Throughput               %         21.20
+SM Active Cycles              cycle 37,633,714.52
+Compute (SM) Throughput           %         97.50
+----------------------- ----------- -------------
+```
+```
+Compute (SM) Throughput    97.50 %
+Memory Throughput          97.50 %
+DRAM Throughput            25.07 %
+```
+- Compute (SM) throughput is NOT % of peak TFLOP/s
+  - Actually means, "% of cycles where the SM issued at least one instruction"
+  - Includes FP32, INT, address calcs, load/stores, and control flows
+  - This is more occupancy than a raw FLOP metric
+  - I got this because my occupancy is high
+- Memory throughput = 97.5%
+  - An aggregation of all of;
+    - L1
+    - L2
+    - Shared memory paths
+    - Memory instruction issue rate
+  - This is more "how busy were all the memory pipelines"
+  - Lots of memory instructions issued, but doesn't mean DRAM was maxxed
+- DRAM throughput = 25.07%
+  - Another giveaway is `L1 = 97.55% and L2 = 21.20%`
+  - We need to slow down here and build another analogy to understand where the L1/L2 latency is going. in [this accompanying md file](memory_throughput_mental_model.md).
 
 ## Misc Learning:
 - Row Major notation `MxN`:
