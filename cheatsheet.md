@@ -65,6 +65,8 @@ Max Texture 3D Size:                16384 x 16384 x 16384
   - Check the many sections here
 - `ncu --set full ./saxpy`
 
+## Designing Kernels
+- "Optimise until the bottleneck is the right one for the algorithm"
 
 ## **Goals**
 
