@@ -99,6 +99,11 @@ DRAM Throughput            25.07 %
   - Another giveaway is `L1 = 97.55% and L2 = 21.20%`
   - We need to slow down here and build another analogy to understand where the L1/L2 latency is going. in [this accompanying md file](memory_throughput_mental_model.md).
 
+### Ok, well why not just preload A and B in the naive kernel
+- Thanks to my hard work understanding occupancy last week, I realise that preloading that 128K floats will be well above max shared memory per SM, let alone max shared memory per block.
+- Even if i could fit it on, literally only 1 warp at a time would run. Horrendous occupancy.
+- So I won't even bother coding it. Straight onto tiled matrix multplication
+
 ## Misc Learning:
 - Row Major notation `MxN`:
   - I always forget which way around this is

@@ -1,0 +1,1 @@
+- [2025/12/15] We optimise until the bottleneck is the right one for my algorithm
