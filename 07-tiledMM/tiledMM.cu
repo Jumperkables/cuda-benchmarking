@@ -134,6 +134,8 @@ void tiledMM_naive_run(
     );
     if (all_K) {
         std::cout << "Success\n";
+    } else{
+        std::cout << "Failure\n";
     }
 
     // Free CUDA mem
