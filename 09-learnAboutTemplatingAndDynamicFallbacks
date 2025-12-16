@@ -1,0 +1,6 @@
+# Things to look into in depth
+- MAKE A FIXED TEMPLATE KERNEL VERSION TO OVERRIDE THE DYNAMIC
+- Dynamic fallbacks vs Compile-time known templates
+- The extern keyword
+- What exactly does `__syncthreads();` do
+- WHY DO I NEED TO `__syncthreads();` in the places that i do
