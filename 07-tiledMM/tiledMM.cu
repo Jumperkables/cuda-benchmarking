@@ -1,5 +1,6 @@
 // standard includes
-#include <stdio>
+#include<algorithm>
+#include <iostream>
 #include <vector>
 
 // cuda inclues
@@ -23,7 +24,7 @@ __global__ void tiledMM_naive_dyn(
     const int TK
 ){
     // For the dynamic kernel, invoke shared memory
-    extern __global__ T shmem[];
+    extern __shared__ T shmem[];
 
     // edge guards
     int tx = threadIdx.x;
@@ -34,7 +35,7 @@ __global__ void tiledMM_naive_dyn(
 
     // each thread is responsible for exactly 1 element in the output C matrix
     int BM = blockDim.y;
-    int BN = blockDim.x
+    int BN = blockDim.x;
 
     // Split between As and Bs subsections
     // Layout: shmem = [As (BM * TK): Bs (TK * BN)]
@@ -113,13 +114,43 @@ void tiledMM_naive_run(
     // Fixed launch sizes
     //tiledMM_naive<block_size_y, block_size_x, tile_size_K><<<grid, block>>>(A, B, C, M, K, N);
     //           <    BM      ,     BN      ,   TK       >    <== I learned about templating CUDA kernels today
-    tiledMM_naive_dyn<<<grid, block>>>(A, B, C, M, K, N, tile_size_K);
+    tiledMM_naive_dyn<<<grid, block>>>(d_A, d_B, d_C, M, K, N, tile_size_K);
+    // Try catching runtime errors
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        printf("Launch error: %s\n", cudaGetErrorString(e));
+    }
+    cudaDeviceSynchronize();
+
+    // copy back to host
+    cudaMemcpy(h_C.data(), d_C, bytes_C, cudaMemcpyDeviceToHost);
+
+    // sanity check
+    // Check all values are K (should happen in matmul of matrices all ones)
+    bool all_K = std::all_of(h_C.begin(), h_C.end(),
+        [K](float x){
+            return std::fabs(x- static_cast<float>(K) ) < 1e-5f;
+        }
+    );
+    if (all_K) {
+        std::cout << "Success\n";
+    }
+
+    // Free CUDA mem
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_C);
 }
 
 
 
 // entry
 int main(int argc, char* argv[]){
+    // arg input checks
+    if (argc != 7){
+        std::cout << "Usage: " << argv[0] << "<M> <K> <N> <BLOCK_X> <BLOCK_Y> <TILE_K>";
+    }
+
     // matrix dimensions
     int M = std::stoi(argv[1]);
     int K = std::stoi(argv[2]);
