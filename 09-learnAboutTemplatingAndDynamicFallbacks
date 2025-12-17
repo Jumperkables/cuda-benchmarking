@@ -4,4 +4,3 @@
 - The extern keyword
 - What exactly does `__syncthreads();` do
 - WHY DO I NEED TO `__syncthreads();` in the places that i do
-- DEBUG using what was written in CUDA MISC chat

@@ -1,5 +1,6 @@
 // standard includes
-#include<algorithm>
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <vector>
 
@@ -24,6 +25,7 @@ __global__ void tiledMM_naive_dyn(
     const int TK
 ){
     // For the dynamic kernel, invoke shared memory
+    //                     As          Bs
     extern __shared__ T shmem[];
 
     // edge guards
@@ -31,7 +33,6 @@ __global__ void tiledMM_naive_dyn(
     int ty = threadIdx.y;
     int col = tx + (blockIdx.x * blockDim.x);
     int row = ty + (blockIdx.y * blockDim.y);
-    if ((col >= N) || (row >= M)) return;
 
     // each thread is responsible for exactly 1 element in the output C matrix
     int BM = blockDim.y;
@@ -44,18 +45,18 @@ __global__ void tiledMM_naive_dyn(
 
     // 1) Load in the tile_k chunks of A and B - taking advantage of burst memory reads
     // 2) Then do the accumulation and maths afterwards in rapid succession, not waiting for reads
-    float acc = 0;
-    for (int k0=0; k0 <= K; k0+= TK){
+    T acc = T(0);
+    for (int k0=0; k0<K; k0+= TK){
         // Load A and B tile chunks into shared memory
         // Load A as [ty, kk] for kk in [0, TK) - ROW MAJOR (TK x BM)
-        for (int kk=tx; kk<=TK; kk+=BN){
+        for (int kk=tx; kk<TK; kk+=BN){
             int a_col = k0 + kk;
-            As[(ty*TK) + kk] = (a_col < K) ? A[(K*row)+ a_col] : T(0);   // clever type casting if i do say so myself
+            As[(ty*TK) + kk] = (a_col < K) && (row < M) ? A[(K*row)+ a_col] : T(0);   // clever type casting if i do say so myself
         }
         // Load B as - ROW MAJOR (BN x TK) - NOTE INDEXES CAREFULLY
-        for (int kk=ty; kk<=TK; kk+=BM){
+        for (int kk=ty; kk<TK; kk+=BM){
             int b_row = k0 + kk;
-            Bs[(kk*BN) + tx] = (b_row < K) ? B[(N*b_row) + col] : T(0);
+            Bs[(kk*BN) + tx] = (b_row < K) && (col < N) ? B[(N*b_row) + col] : T(0);
         }
         __syncthreads();    // waits until all threads are ready probably - looking up exactly what this does tomorrow
 
@@ -66,7 +67,9 @@ __global__ void tiledMM_naive_dyn(
         __syncthreads();
     }
     // Now assign the accumulation to the correct position in C
-    C[(N*row) + col] = acc;
+    if (row < M && col < N) {
+        C[row * N + col] = acc;
+    }
 }
 
 
@@ -108,19 +111,21 @@ void tiledMM_naive_run(
         ceil_div(M, block_size_y)
     );
 
+    // shared memory
+    size_t shmem_bytes = (block.x * tile_size_K + block.y * tile_size_K) * sizeof(float);
+
     // launch kernel
     // launch pre-cooked if block size aligns
     // else launch specific
     // Fixed launch sizes
     //tiledMM_naive<block_size_y, block_size_x, tile_size_K><<<grid, block>>>(A, B, C, M, K, N);
     //           <    BM      ,     BN      ,   TK       >    <== I learned about templating CUDA kernels today
-    tiledMM_naive_dyn<<<grid, block>>>(d_A, d_B, d_C, M, K, N, tile_size_K);
+    tiledMM_naive_dyn<<<grid, block, shmem_bytes>>>(d_A, d_B, d_C, M, K, N, tile_size_K);
     // Try catching runtime errors
     cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) {
-        printf("Launch error: %s\n", cudaGetErrorString(e));
-    }
-    cudaDeviceSynchronize();
+    if (e != cudaSuccess) printf("Launch error: %s\n", cudaGetErrorString(e));
+    e = cudaDeviceSynchronize();
+    if (e != cudaSuccess) printf("Sync error: %s\n", cudaGetErrorString(e));
 
     // copy back to host
     cudaMemcpy(h_C.data(), d_C, bytes_C, cudaMemcpyDeviceToHost);
@@ -151,6 +156,7 @@ int main(int argc, char* argv[]){
     // arg input checks
     if (argc != 7){
         std::cout << "Usage: " << argv[0] << "<M> <K> <N> <BLOCK_X> <BLOCK_Y> <TILE_K>";
+        return 1;
     }
 
     // matrix dimensions
