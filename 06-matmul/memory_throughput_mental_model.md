@@ -186,4 +186,3 @@ Across warps:
     - But requests are still spread out in time
     - No burst pressure on L2 and DRAM
 
-- 

@@ -11,6 +11,42 @@
 #include "../include/my_utils.hpp"
 
 
+// Fixed width kernel
+template<int BM, int BN, int TK, typename T>
+__global__ void tiledMM_naive(
+    const T* __restrict__ A,
+    const T* __restrict__ B,
+    T* __restrict__ C,
+    const int M,
+    const int K,
+    const int N
+){
+    // more convenient way to sort shared memory
+    __shared__ T As[BM][TK];    // <=== Row major
+    __shared__ T Bs[TK][BN];    // <=== Row major
+
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int col = blockIdx.x * BN + tx;
+    int row = blockIdx.y * BM + ty;
+
+    T acc = T(0);
+    for (int k0 = 0; k0 < K; k0 += TK) {
+        int a_col = k0 + tx;
+        int b_row = k0 + ty;
+        As[ty][tx] = (row < M && a_col < K) ? A[row * K + a_col] : T(0);
+        Bs[ty][tx] = (b_row < K && col < N) ? B[b_row * N + col] : T(0);
+        __syncthreads();
+        #pragma unroll
+        for (int kk = 0; kk < TK; ++kk)
+            acc += As[ty][kk] * Bs[kk][tx];
+        __syncthreads();
+    }
+
+    if (row < M && col < N)
+        C[row * N + col] = acc;
+}
+
+
 
 // kernel - Dynamic kernel
 // Launched when BM and BN are NOT one of the precompiled ones known at compile time
@@ -118,9 +154,16 @@ void tiledMM_naive_run(
     // launch pre-cooked if block size aligns
     // else launch specific
     // Fixed launch sizes
-    //tiledMM_naive<block_size_y, block_size_x, tile_size_K><<<grid, block>>>(A, B, C, M, K, N);
-    //           <    BM      ,     BN      ,   TK       >    <== I learned about templating CUDA kernels today
-    tiledMM_naive_dyn<<<grid, block, shmem_bytes>>>(d_A, d_B, d_C, M, K, N, tile_size_K);
+    if (block_size_x == 16 && block_size_y == 16 && tile_size_K == 64){
+        //           <BM, BN, TK>    <== I learned about templating CUDA kernels 2025-12-15
+        tiledMM_naive<16, 16, 64, float><<<grid, block>>>(d_A, d_B, d_C, M, K, N);
+
+    } else if (block_size_x == 32 && block_size_y == 16 && tile_size_K == 32 ) {
+        tiledMM_naive<16, 32, 32, float><<<grid, block>>>(d_A, d_B, d_C, M, K, N);
+    } else{
+        tiledMM_naive_dyn<<<grid, block, shmem_bytes>>>(d_A, d_B, d_C, M, K, N, tile_size_K);
+    }
+
     // Try catching runtime errors
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) printf("Launch error: %s\n", cudaGetErrorString(e));

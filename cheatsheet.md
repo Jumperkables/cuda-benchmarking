@@ -56,6 +56,17 @@ Max Texture 2D Size:                131072 x 65536
 Max Texture 3D Size:                16384 x 16384 x 16384
 ```
 
+## Things to learn to use
+- Spotting compile time speedups:
+  - `#pragma unroll`
+  - Register count:
+    - higher register count implies static kernels = good sign
+  - Higher instruction count for similar algorithm
+  - FLOP/s per instruction increase
+- Not using excessive generality
+  - Good python is often general for re-usability
+  - Good CUDA will not let excessive generality cause things unnecessary slowdown such as introducing redundent compile-time ambiguity
+
 ## Compilation and profiling
 - `nvcc -Xptxas -maxrregcount=24 --ptxas-options=-v vector_add_wasteful-registers.cu -o vector_add_wasteful-registers_reg24_bs128`
 - `sudo ncu ./executable`
