@@ -317,3 +317,86 @@ Common pitfalls:
     - The `block` boat size is too small, this is VERY easy to do:
       - `1536 max threads per SM / 16 max blocks per SM = 96 threads per block`
       - If i pick anything under `96 threads per block`, I'm leaving threads on the table
+
+
+# FYI Typical orders of magnitude
+Say with me our daily mantra:
+- ON GPUS, MEMORY LATENCY DOMINATES **EVERYTHING**.
+- Arithemetic is cheap. 
+- Addressing is cheap.
+- Waiting is expensive
+
+- If you can recompute something instead of loading it: DO IT
+- Load once and re-use many times: DO IT
+
+## Arithmetic
+| Operation            | Approx cycles      | Notes                |
+| -------------------- | ------------------ | -------------------- |
+| FP32 FMA (`a*b + c`) | **1 cycle**        | Fully pipelined      |
+| FP32 add or mul      | 1 cycle            | Same                 |
+| Integer add          | 1 cycle            |                      |
+| Integer mul          | ~4 cycles          | Still cheap          |
+| Integer divide       | **very expensive** | Avoid in inner loops |
+
+## Addresses
+| Operation                      | Cost                  |
+| ------------------------------ | --------------------- |
+| Address add                    | 1 cycle               |
+| Address multiply (runtime)     | ~4 cycles             |
+| Compile-time constant multiply | **0 cycles** (folded) |
+
+Why compile time matters:
+ptr + (ty * 16 + k)   // folded, cheap
+ptr + (ty * TK + k)  // runtime multiply if TK not known
+
+
+## Memory
+- Register: ~1 cycle
+  - `Private to each thread`
+  - Each soldier carries and is given these, no sharing.
+- Shared mem: ~20-30 cycles
+  - `Shared between block` 
+  - Bunker cache brought in by the admin team. The whole block shares this.
+- L1/TEX (Texture): 30-50 cycles
+  - Warehouse for the 1 port
+  - `Shared per SM`
+
+`Shared by ALL SMs:`
+- L2: ~100 cycles
+  - Base storage center
+  - Hardware managed
+- DRAM: ~400-800 cycles
+  - Back in home country
+  - Off chip
+  - High latency, high bandwidth, so we want many requests at once here
+
+
+### Memory example
+```cpp
+// Bad
+__global__ void bad(const float* A, float* out) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float acc = 0.0f;
+    for (int i = 0; i < 32; ++i) {
+        acc += A[idx] * i;
+    }
+    out[idx] = acc;
+}
+
+
+// Good
+__global__ void good(const float* A, float* out) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float a = A[idx];   // one load
+    float acc = 0.0f;
+
+    for (int i = 0; i < 32; ++i) {
+        acc += a * i;
+    }
+    out[idx] = acc;
+}
+```
+
+
