@@ -2,13 +2,13 @@
 - Check the accompanying memory_throughput md file
 - Its time to update my military mental model outlined in [section 03](../03_mental-model/README.md)
 
-## A new analogy for memory movement - Building on the military one
+# A new analogy for memory movement - Building on the military one
 Ok, i stumbled on the need for a memory ordering analogy that I'll need to get right first before the other ones
 Why all code doesn't do the same thing:
 - Cache hits and misses differ
 - Address dependencies and decoding overhead
 
-### Rules of thumb
+## Rules of thumb
 - Register: ~1 cycle
   - Private to each thread
   - Each soldier carries and is given these, no sharing.
@@ -27,7 +27,8 @@ Why all code doesn't do the same thing:
   - Off chip
   - High latency, high bandwidth, so we want many requests at once here
 
-### Analogy:
+## Analogy:
+- Latency hiding is kind of a thing only because ALUs are shared. If every warp had its own ALU, then WARP B wouldn't be able to hide its latency while it waits for memory. Also instruction fetch, and memory pipelines.
 - Each cycle in different memory movement is made of essential steps that are all quite fast in themselves. i.e. a 400 cycle DRAM read is NOT just 399 cycles of prep and 1 cycle of movement, its more like very few steps each quite expensive due to off-chip travel, queuing, arbitration,and DRAM row activations.
 - Remember that warps all happen at the same time
   - Loads for all threads happen at the same time
@@ -36,6 +37,7 @@ Why all code doesn't do the same thing:
   - Drill seargants understand that you're going to need to fetch and request equipment regularly, and of course tolerate an amount of it. But if you get lazy and keep requesting for things from global memory you could have computed once and stored on your person as a `registered weapon`, then the drill seargant/central command will be pissed at you - even though warp sheduling drill seargants can't be angry.
 - `Shared memory` is equipment brought by each admin team by their `block ship`.
   - Its supposed to be handled explicitly by the `coder central command`. But it really helps if I can specify ahead of time to the `compiling officials` how big its expected to be.
+  - Shared memory is on chip and I manage it.
   - If I do specify how big this is at `compile time of the plans`, then more efficient and less commands can be issued about interfacing with it, more unrolling and less address arithmetic.
   - If a soldier needs something from here, it is 20 cycles or so waiting, which is 5 times slower than ALU arithmetic it could be doing. Memory is EXPENSIVE.
 - `L1/TEX` is the storage cupboard shared by the `entire SM port`, and its only twice as slow as shared memory. But still significant
@@ -93,157 +95,61 @@ else
         - My addition: Again, the dock could have been designed to allow late starters, but this would require allowing CPU-like context switches and hardware/clock speed/efficiency concessions that we elect to forgo for the GPU mantra of trading flexibility for efficiency.
 
 
-## Things to add to the analogy:
-- `__syncthreads()`
-- Latency hiding is kind of a thing only because ALUs are shared. If every warp had its own ALU, then WARP B wouldn't be able to hide its latency while it waits for memory. Also instruction fetch, and memory pipelines.
-## ChatGPTs topic recommendations:
-Core mental model to harden - Think in three layers simultaneously:
-- Hardware reality (what physically exists)
-- Compiler knowledge (what can be planned in advance)
-- Runtime behavior (what actually happens during execution)
+## Load Imbalance
+- When you have some kind of for loop say iterating in a warp of work, and the total iterations across each thread isn't a clean multiple of 32, then some threads will end up doing work that others don't need to
+- If this can't be helped, then it is what it is, but this is load imbalance and it can be introduced accidentally quite easily
+- Often you can adjust hyperparameters like `TK` in tiled matmul to make it work
+- The `kernel instructions` from a `warp squadron` may end up being a number that isn't 0 modulo 32. This will mean that `thrad soldiers` will be doing an iteration or so more work than their squadmates.
 
-Your analogy should map each concept to one of these layers.
-1) Latency hiding:
-- What you learned
-  - Global memory is slow, but GPUs don’t wait for it.
-  - Warps are swapped in/out to hide latency.
-  - Occupancy is not a goal; it’s a means to hide latency.
-  - High occupancy + dependency chains = still slow.
-- Military analogy
-    - A single squad waiting for supplies is useless.
-    - A base runs many squads; while one waits, others fight.
-    - Latency hiding = always having another squad ready.
-- Key insight to harden
-  - The GPU does not make memory faster — it avoids waiting.
-- Tie this to:
-  - warps per SM
-  - dependency chains (acc += ...)
-  - why unrolling helps (multiple independent instructions)
 
-2) Shared memory
-- What you learned
-  - Shared memory is on-chip, fast, and cooperative.
-  - It is not a cache; it’s a manually managed scratchpad.
-  - Static shared memory enables compiler optimization.
-  - Dynamic shared memory trades performance for flexibility.
-- Military analogy
-  - Shared memory = ammo cache inside the bunker.
-  - Global memory = supply depot miles away.
-  - Static shared = prebuilt bunkers with fixed layout.
-  - Dynamic shared = temporary tents you assemble on arrival.
-- Key insight to harden
-  - Shared memory is powerful because it turns many long trips into one short trip — but only if organized well.
-- Tie this to:
-  - tiling
-  - reuse across K
-  - cooperative loads
-  - bank conflicts (friendly fire inside the bunker)
+## Shared Memory - Bank Conflicts
+So mechanically how shared memory works is pretty awesome. Don't so much think of it as a giant contiguous block of memory, but realise that it was designed to be accessed fast by warps.
+- Shared memory has 32 banks that can read a floats worth of bits per bank per cycle. i.e. 32 bits for each 32 bank.
+  - This is striped across memory not in chunks
+  - `float 0 -> bank0`
+  - `float 1 -> bank1`
+  - ...
+  - `float 31 -> bank31`
+  - `float 32 -> bank0`
+  - `float 33 -> bank1`
+  - If you respect banking properly, then all 32 threads can receive something in 1 cycle:
+    - `shmem[threadIdx.x];`
+    - however, if all threads access crucially the SAME elemnt:
+      - `shmem[0];`
+      - It still comes out of the 0 bank, and you need to read the same bank for 32 cycles, one at a time
+      - These are bank conflicts
+- Bank conflict analogy:
+  - The `shared memory logistics block` has `32 bank messengers in striped uniforms` that turn up at once to respond to reads
+  - Each messenger must sign each order given from its pile with its own name
+  - If each `thread soldier` in the `warp squadron` needs something from `bank messenger 0`, you're going to have to wait 32 cycles for them all to get it.
+- This does indeed happen in 1 cycle
+- But remember the shared-memory overhead of 20-30 cycles
+  - This doesn't contradict the bank speed because we need to do things like address decoding for any given read. So we end up with 20-30 cycles before the read is issued and the data becomes visible to the warps still
 
-3) `__syncthreads()`
-- What you learned
-  - It is both an execution barrier and a memory fence.
-  - It is not inherently slow; waiting is slow.
-  - It exposes imbalance and divergence.
-  - You need it whenever threads depend on each other’s data.
-- Military analogy
-  - __syncthreads() = “hold position until all squads arrive.”
-  - If one squad is late, everyone waits.
-  - The order itself isn’t costly; the straggler is.
-- Key insight to harden
-  - Barriers don’t cause slowness — uneven work does.
-- Tie this to:
-  - load imbalance in loops
-  - warp-level vs block-level coordination
-  - why tiling must be symmetric
 
-4) Compile-time vs runtime knowledge
-- What you learned
-  - The compiler is your logistics planner.
-  - If it knows sizes at compile time, it:
-    - unrolls loops
-    - erases address math
-    - schedules instructions better
-  - Runtime variability prevents those optimizations.
-- Military analogy
-  - Compile-time constants = pre-war planning.
-  - Runtime values = battlefield improvisation.
-  - Planned operations beat improvised ones.
-- Key insight to harden
-  - Performance comes from what the compiler can prove, not what you know as a human.
-- Tie this to:
-  - templates
-  - static shared arrays
-  - #pragma unroll
-  - why dynamic kernels underperform
-  - Why we want a dynamic fallback in the first place
+## Compile-time vs runtime knowledge
+- I write the `kernel instructions`, and the compiler turns them into actual logistics policies.
+- If I am specific with numbers and not overly ambiguous, this allows the `logistics compilers` to enact certain efficienies:
+  - Shared memory:
+    - Know `shared memory` size ahead of time allows the `compiler logisitcs` to set out a `static arrayed area` with labels and other such that make things faster. Otherwise it must be an ambiguously large space, requiring sorting on the way in
+    - `<Templating>` my `kernel` instructions makes my orders `readable, re-usable` by others, though the version i hand the `logisitcs compilers` squad should be specific about the numbers needed. It costs very little extra to have `compiled in multiple compile-time` copies of `kernel's orders` into the plans given that `executable` bag space isn't a concern.
+    - `#pragma unroll` removes dependency chains and following loop overheads. i.e. not needing to wait for needless `shared memory` logic and just getting on with orders without needing to `unpack each with needless wrapping overhead`
 
-5) Divergence
-- What you learned
-  - A warp executes as one unit.
-  - If threads take different paths, they serialize.
-  - Divergence wastes lanes, not time per se.
-- Military analogy
-  - A platoon moves together.
-  - If half go left and half go right, they must take turns.
-  - Empty trucks still burn fuel.
-- Key insight to harden
-  - Divergence turns parallel units into serial ones.
-- Tie this to:
-  - conditionals on tx, ty
-  - edge guards
-  - why padding and masking exist
 
-6) Load imbalance
-- What you learned
-  - Even without divergence, unequal work causes waiting.
-  - Load imbalance shows up at barriers.
-  - Dynamic loops often create imbalance.
-- Military analogy
-  - Some squads finish fast, others slog through mud.
-  - Everyone waits at rendezvous.
-  - The slowest squad defines the pace.
-- Key insight to harden
-  - Balanced work is more important than fast individual threads.
-- Tie this to:
-  - cooperative loads
-  - equal iteration counts
-  - tile shapes
+## The purpose of CUDA kernel code
+- Lots of squads walking around `occupying` my floor space is NOT the goal, but it is essential for hiding latency.
+- Poorly planned, my `SM base` can keep itself busy `re-deriving the same addresses needlessly`. This is a failure.
+- My job as `kernel` (lol) of this army base is to at a minimum complete the mission
+- But actually my job is to learn from the first few runs I try, and adapt early to make y instructions the most efficient way possible.
+- I then ship these out for others to use.
+- I am an efficiency optimiser, I am not an end user.
 
-7) Instruction overhead vs useful work
-- What you learned
-  - High SM utilization ≠ high FLOP/s.
-  - The SM can be busy doing “bookkeeping.”
-  - Dynamic indexing, loops, and sync inflate instruction count.
-- Military analogy
-  - Soldiers constantly moving doesn’t mean progress.
-  - Marching, relaying orders, waiting all burn energy.
-  - Only firing at the enemy counts.
-- Key insight to harden
-  - You optimize by increasing useful work per instruction.
-- Tie this to:
-  - FLOPs per instruction
-  - unrolling
-  - register reuse
 
-8) Why naive kernels can look “surprisingly good”
-- What you learned
-  - Caches can mask bad access patterns.
-  - Moderate sizes sometimes fit well in L2.
-  - Naive kernels are simple and low-overhead.
-- Military analogy
-  - Small battles don’t need complex logistics.
-  - Overengineering can slow things down.
-- Key insight to harden
-  - Optimization only wins once overhead is amortized.
-
-9) Professional CUDA workflow (this is important)
-- What you implicitly learned
-  - Write a correct dynamic baseline
-  - Write one specialized fast path
-- Dispatch based on known shapes
-  - Compare bytes, FLOPs, and time
-  - Iterate
-- Military analogy
-  - Train recruits (dynamic)
-  - Field elite units (specialized)
-  - Deploy appropriately
+## Naive Kernels
+- Occam's razor has some place on this here base
+- Caching and such can mask bad access patterns and floor space, getting you 80% of the way there
+- Naive overengineering can practically slow things down, as the `logisitcs compilers` try to work my orders
+- But my job isn't mission success.
+  - My minimal job is a plan for AT LEAST mission success
+  - Then to make the most efficient possible `kernel instructions`
+  - This plan will be deployed to millions of bases, and resources are tight out there.
