@@ -1,6 +1,7 @@
-#include "original.cuh"
+#include "rowsum.cuh"
 
 
+// Original from ChatGPT
 __global__ void row_sum_bad(const float* __restrict__ A,
                             float* __restrict__ out,
                             int M, int N)
@@ -26,4 +27,15 @@ __global__ void row_sum_bad(const float* __restrict__ A,
     }
 
     if (tx == 0) out[row] = s[0];
+}
+
+
+
+// My attempted improvement
+__global__ void row_sum_mine(
+    const float* __restrict__ A,
+    float* __restrict__ out,
+    int M, int N
+) {
+    // Row and thread indexing
 }

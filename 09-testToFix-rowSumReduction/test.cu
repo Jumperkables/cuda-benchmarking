@@ -1,9 +1,10 @@
 // standard includes
+#include <cassert>
 #include <iostream>
 #include <vector>
 
 // local includes
-#include "original.cuh"
+#include "rowsum.cuh"
 #include "../include/my_utils.hpp"
 
 // cuda includes
@@ -55,6 +56,16 @@ int main(int argc, char* argv[]){
 
     // move back to host
     cudaMemcpy(h_out.data(), d_out, bytes_out, cudaMemcpyDeviceToHost);
+
+    // sanity test
+    assert(h_out.size() == static_cast<size_t>(M));
+    for (int i=0; i<M; i++){
+        if (h_out[i] != static_cast<float>(N)){
+            std::cerr << "At least one row wrong\n";
+            std::abort();
+        }
+    }
+    std::cout << "Passed sanity check!\n";
 
     // Free the mallocs
     cudaFree(d_A);
