@@ -26,6 +26,161 @@ I compiled both a dynamic fallback, and a faster precompiled version.
     - Poor unrolling?
 - FLOP/s and FLOP per Byte derivation attempt:
 
+#### Behaviour:
+- Each block is assigned its own row
+- `for (int j=tx; j<N; j+=blockDim.x)`
+  - Load imbalance if the block size is ever not a multiple of 32, but this is typical
+
+#### `for (int j=tx; j<N; j+=blockDim.x) { acc += A[row * N + j]}`
+- At first, i suspected that the big inefficiency here was the fact that we switch back and forth between doing reads on A somewhere in global memory, and then ops back and forth
+  - `read A -> acc += -> read A -> acc += -> ...`
+  - the strict dependency chain is like so:
+  - ```
+    for (...) {
+     r = load(A[i]);
+     acc = acc + r; // <- cannot be launched until r returns
+    }
+    ```
+  - However, proper instruction level parallelism would be:
+  - ```cpp
+    float a0 = A[i];
+    float a1 = A[i + stride];
+    float a2 = A[i + stride*2];
+    float a3 = A[i + stride*3];
+    acc = a0 + a1 + a2 + a3;
+    ```
+  - The tradeoff here is registers, and being careful with the striding to make sure that Istill have coalesced reads.
+- So lets see how many accumulators i can add before we begin to get slowdowns again
+
+| Kernel         | Registers | Duration | L1 Throughput | L2 Throughput |
+|----------------|-----------|----------|---------------|---------------|
+| 1 accumulator  | 12        | 98.72us  | 16.74%        | 24.02%        | 
+| 2 acc          | 16        | 95.94us  | 17.45%        | 24.38%        |
+| 3 acc          | 18        | 92.96us  | 17.07%        | 23.71%        |
+| 5 acc          | 26        | 93.18us  | 17.21%        | 28.17%        |
+| 10 acc         | 38        | 91.20us  | 17.3%         | 31.32%        |
+- I should probably stop before either overflows happening causing workload imbalance, or register pressure reduces occupancy (which happens about ~42 registers per thread).
+- Cool! Increasing instruction-level parallelism really does make things faster
+
+```
+Warp stats 1 accumulator:
+    ---------------------------------------- ----------- ------------
+    Metric Name                              Metric Unit Metric Value
+    ---------------------------------------- ----------- ------------
+    Warp Cycles Per Issued Instruction             cycle        65.91
+    Warp Cycles Per Executed Instruction           cycle        66.07
+    Avg. Active Threads Per Warp                                31.91
+    Avg. Not Predicated Off Threads Per Warp                    29.09
+    ---------------------------------------- ----------- ------------
+```
+```
+Warp stats 10 accumulators:
+    ---------------------------------------- ----------- ------------
+    Metric Name                              Metric Unit Metric Value
+    ---------------------------------------- ----------- ------------
+    Warp Cycles Per Issued Instruction             cycle        77.57
+    Warp Cycles Per Executed Instruction           cycle        77.86
+    Avg. Active Threads Per Warp                                31.87
+    Avg. Not Predicated Off Threads Per Warp                    28.24
+    ---------------------------------------- ----------- ------------
+    
+Making N 10 times larger increases stall:
+    Section: Warp State Statistics
+    ---------------------------------------- ----------- ------------
+    Metric Name                              Metric Unit Metric Value
+    ---------------------------------------- ----------- ------------
+    Warp Cycles Per Issued Instruction             cycle       153.51
+    Warp Cycles Per Executed Instruction           cycle       153.61
+    Avg. Active Threads Per Warp                                31.98
+    Avg. Not Predicated Off Threads Per Warp                    31.28
+    ---------------------------------------- ----------- ------------
+```
+- However, increasing N made my throughput go up a lot too. Genuinely many things to balance.
+
+
+#### The reduction step - EDIT: Optimising the wrong bottleneck
+```
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tx < stride) s[tx] += s[tx + stride];
+        __syncthreads();
+    }
+
+    if (tx == 0) out[row] = s[0];
+```
+- This reduction is very inefficient
+- The goal is to sum all of shared memory into a single value
+- To this end, the striding downwards is ok at first
+- But notice that when stride gets lower than 32, i.e. 16, then half the threads in the warp become inactive
+- Worse, since the thread index itself gets smaller and smaller, we disproportionately have the rest of the block waiting for us, with now massively underutilised warps
+- An amout of this is inevitable chatGPT tells me. Fundamentally there comes a pint with such reductions where parallel work collapses, but lets see if we can make it better
+
+```cpp
+/*
+- __device__ needed to tell the compiler that this is kernel code
+- __inline__ to hint to the compiler to paste this code inline to remove function call overheads
+*/
+__inline__ __device__ float warp_reduce_sum(float v){
+    // ChatGPT made this, and it is AWESOME
+    // Full mask for active lanes in the warp
+    unsigned mask = 0xffffffffu;
+    // Tree reduction within a warp
+    v += __shfl_down_sync(mask, v, 16);
+    v += __shfl_down_sync(mask, v,  8);
+    v += __shfl_down_sync(mask, v,  4);
+    v += __shfl_down_sync(mask, v,  2);
+    v += __shfl_down_sync(mask, v,  1);
+    return v;
+}
+
+
+for (int stride = blockDim.x / 2; stride >= 32; stride >>= 1) { // Changed to leave 1 warps worth of work at the end
+    if (tx < stride) s[tx] += s[tx + stride];
+    __syncthreads();
+}
+
+// Finalise with a single warp
+if (tx < 32) {
+    float v = s[tx];
+    v = warp_reduce_sum(v);
+    if (tx == 0) out[row] = v;
+}
+```
+- The above change DID make something better. But not by much at all:
+```cpp
+// Original implementation
+----------------------- ----------- ------------
+Metric Name             Metric Unit Metric Value
+----------------------- ----------- ------------
+DRAM Frequency                  Ghz         9.49
+SM Frequency                    Ghz         1.39
+Elapsed Cycles                cycle      916,259
+Memory Throughput                 %        83.37
+DRAM Throughput                   %        83.37
+Duration                         us       656.90
+L1/TEX Cache Throughput           %        22.81
+L2 Cache Throughput               %        35.68
+SM Active Cycles              cycle   821,289.06
+Compute (SM) Throughput           %        11.00
+----------------------- ----------- ------------
+
+// Improved
+----------------------- ----------- ------------
+Metric Name             Metric Unit Metric Value
+----------------------- ----------- ------------
+DRAM Frequency                  Ghz         9.49
+SM Frequency                    Ghz         1.39
+Elapsed Cycles                cycle      913,267
+Memory Throughput                 %        82.95
+DRAM Throughput                   %        82.95
+Duration                         us       654.75
+L1/TEX Cache Throughput           %        22.79
+L2 Cache Throughput               %        35.71
+SM Active Cycles              cycle   821,974.80
+Compute (SM) Throughput           %        10.70
+----------------------- ----------- ------------
+```
+
+
 ### Dynamic Performance
 - `blockDim.x == 256 && M = 3000 && N = 2047`
     - Carefully note N=2047, mildly smaller, but does not use the precompiled pathway

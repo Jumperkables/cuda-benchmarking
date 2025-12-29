@@ -1,6 +1,7 @@
 // standard includes
 #include <cassert>
 #include <iostream>
+#include <string>
 #include <vector>
 
 // local includes
@@ -12,13 +13,14 @@
 
 int main(int argc, char* argv[]){
     // arg handling
-    if (argc != 4){
-        std::cout << "Usage: " << argv[0] << "<blockDim.x> <M> <N>" << std::endl;
+    if (argc != 5){
+        std::cout << "Usage: " << argv[0] << "<blockDim.x> <M> <N> <kernel_choice>" << std::endl;
         return 1;
     }
     int block_x = std::atoi(argv[1]);
     int M = std::atoi(argv[2]);
     int N = std::atoi(argv[3]);
+    std::string kernel_choice(argv[4]);
 
     // host arrays
     std::vector<float> h_A(M * N, 1.0f);
@@ -36,11 +38,27 @@ int main(int argc, char* argv[]){
     cudaMemcpy(d_A, h_A.data(), bytes_A, cudaMemcpyHostToDevice);
 
     // Launch kernel
-    if (block_x == 256 && M == 3000 && N == 2048){
+    if (block_x == 128 && M == 3000 && N == 40960){
         // Compile-time optimised
-        dim3 grid(ceil_div(3000*2048, 256));
-        dim3 block(256);
-        row_sum_bad<<<grid, block>>>(d_A, d_out, 3000, 2048);
+        dim3 grid(ceil_div(3000*2048, 128));
+        dim3 block(128);
+        if (kernel_choice == "bad"){
+            row_sum_bad<<<grid, block>>>(d_A, d_out, 3000, 40960);
+        } else if (kernel_choice == "better_reduction"){
+            row_sum_better_reduction<<<grid, block>>>(d_A, d_out, 3000, 40960);
+        } else if (kernel_choice == "acc2"){
+            row_sum_acc2<<<grid, block>>>(d_A, d_out, 3000, 40960);
+        } else if (kernel_choice == "acc3"){
+            row_sum_acc3<<<grid, block>>>(d_A, d_out, 3000, 40960);
+        } else if (kernel_choice == "acc5"){
+            row_sum_acc5<<<grid, block>>>(d_A, d_out, 3000, 40960);
+        } else if (kernel_choice == "acc10"){
+            row_sum_acc10<<<grid, block>>>(d_A, d_out, 3000, 40960);
+        } else {
+            std::cout << "Kernel choice: " << kernel_choice << " not recognised" << std::endl;
+            return 1;
+        }
+
     }
     else {
         // Dynamic fallback
