@@ -1,4 +1,4 @@
-# **CUDA Kernel Design Checklist**
+# **CUDA Kernel Design Cheatsheet**
 
 ```
 =======================================================
@@ -56,7 +56,97 @@ Max Texture 2D Size:                131072 x 65536
 Max Texture 3D Size:                16384 x 16384 x 16384
 ```
 
-## Things to learn to use
+## FYI Typical orders of magnitude
+Say with me our daily mantra:
+- ON GPUS, MEMORY LATENCY DOMINATES **EVERYTHING**.
+- Arithemetic is cheap. 
+- Addressing is cheap.
+- Waiting is expensive
+- If you can recompute something instead of loading it: DO IT
+- Load once and re-use many times: DO IT
+
+### Arithmetic
+| Operation            | Approx cycles      | Notes                |
+| -------------------- | ------------------ | -------------------- |
+| FP32 FMA (`a*b + c`) | **1 cycle**        | Fully pipelined      |
+| FP32 add or mul      | 1 cycle            | Same                 |
+| Integer add          | 1 cycle            |                      |
+| Integer mul          | ~4 cycles          | Still cheap          |
+| Integer divide       | **very expensive** | Avoid in inner loops |
+
+### Addresses
+| Operation                      | Cost                  |
+| ------------------------------ | --------------------- |
+| Address add                    | 1 cycle               |
+| Address multiply (runtime)     | ~4 cycles             |
+| Compile-time constant multiply | **0 cycles** (folded) |
+
+Why compile time matters:
+ptr + (ty * 16 + k)   // folded, cheap
+ptr + (ty * TK + k)  // runtime multiply if TK not known
+
+
+## Memory
+- Note that global loads are done in 128 Byte segments
+- Register: ~1 cycle
+  - `Private to each thread`
+  - Each soldier carries and is given these, no sharing.
+- Shared mem: ~20-30 cycles
+  - `Shared between block` 
+  - Bunker cache brought in by the admin team. The whole block shares this.
+- L1/TEX (Texture): 30-50 cycles
+  - Warehouse for the 1 port
+  - `Shared per SM`
+
+`Shared by ALL SMs:`
+- L2: ~100 cycles
+  - Base storage center
+  - Hardware managed
+- DRAM: ~400-800 cycles
+  - Back in home country
+  - Off chip
+  - High latency, high bandwidth, so we want many requests at once here
+
+
+
+## Compilation and profiling
+### How many registers?
+- `nvcc -O3 -lineinfo -Xptxas=-v ...`
+  - Shows register spill
+- Fixing the max register count:
+  - `nvcc -Xptxas -maxrregcount=24 --ptxas-options=-v ...`
+
+
+## Profiling
+- `sudo ncu ./executable`
+- `sudo ncu --set full --export roofline ./executable`
+  - Then inspect it with `ncu-ui roofline.ncu-rep`
+  - Go to the "details" tab
+  - Check the many sections here
+- `ncu --set full ./executable`
+
+
+## Reading a new Kernel?
+1. Count Bytes:
+    - Read/Writes from global memory
+    - Read/Writes from shared memory
+2. Think about problem algorithmically
+    - What bottleneck SHOULD it be?
+    - Don't optimise the wrong one lol
+3. Count FLOPs:
+4. Memory access and Operation Ordering: 
+    1. Coalescence (are warp reads contiguous, yes or no?)
+    2. Segments
+        - 95% of the time, global memory loads are 128B = 32x4
+        - Do my loads execute in 1 or more transactions?
+    3. Tail
+        - Small problem size = how many wasted bytes
+    4. Instruction Level Parallelism
+        - Instruction chaining e.g. num accumulators
+    5. Parallelism: Enough blocks/warps overall to cover estimated load times?
+
+
+## Misc 
 - Spotting compile time speedups:
   - `#pragma unroll`
   - Register count:
@@ -67,27 +157,9 @@ Max Texture 3D Size:                16384 x 16384 x 16384
   - Good python is often general for re-usability
   - Good CUDA will not let excessive generality cause things unnecessary slowdown such as introducing redundent compile-time ambiguity
 
-## Compilation and profiling
-- `nvcc -Xptxas -maxrregcount=24 --ptxas-options=-v vector_add_wasteful-registers.cu -o vector_add_wasteful-registers_reg24_bs128`
-- `sudo ncu ./executable`
-- `sudo ncu --set full --export roofline ./executable`
-  - Then inspect it with `ncu-ui roofline.ncu-rep`
-  - Go to the "details" tab
-  - Check the many sections here
-- `ncu --set full ./saxpy`
 
-## Designing Kernels
-- "Optimise until the bottleneck is the right one for the algorithm"
-
-## **Goals**
-
-* Write kernels whose **instruction mix** and **memory behavior** allow ALUs and memory bandwidth to be well utilized.
-* Ensure **enough active warps** to hide latency.
-* Avoid unnecessary consumption of registers/shared memory that reduces resident warps or blocks.
-
----
-
-# **1. Register Usage**
+## Rules of thumb
+### **1. Register Usage**
 
 **Hardware limits (per SM):**
 
@@ -102,14 +174,13 @@ Max Texture 3D Size:                16384 x 16384 x 16384
   (`65536 regs / 1536 threads ≈ 42.6`, rounded down to the nearest 8 = **40**)
 * Allow higher if reducing registers causes **spills** (benchmark both versions).
 * Monitor impact on:
-
   * number of resident blocks
   * number of resident warps
   * achieved occupancy
 
 ---
 
-# **2. Block Size Selection**
+### **2. Block Size Selection**
 
 **Hardware limits:**
 
@@ -134,8 +205,7 @@ Max Texture 3D Size:                16384 x 16384 x 16384
   * But convenient for algorithms with halve-and-shift reduction patterns.
 
 ---
-
-# **3. Occupancy and Warp Count**
+### **3. Occupancy and Warp Count**
 
 **Hardware limits (per SM):**
 
@@ -149,7 +219,6 @@ Occupancy goals:
 * Full occupancy (48/48) is **not required** for peak performance.
 
 Focus on:
-
 * having “enough” warps,
 * not chasing maximum warps.
 
@@ -228,13 +297,13 @@ Use measurements to guide kernel design, not assumptions.
 
 ---
 
-# Military mental model I made
-## Updates I need to make to the analogy:
+## Analogy
+### Updates I need to make to the analogy:
 - [2025-12-12]: While doing matmul i discovered that you can have underfilled warps, if you define a block size of 1.
   - This only launches 1 THREAD per block, which goes to 32 lanes (warp)
   - My analogy needs to define closely that the 32 lanes are the warp, and that sometimes less soldiers can be deployed than 32
 
-## [2025-12-10] Updated Mental Model - Military Operation
+### [2025-12-10] Updated Mental Model - Military Operation
 - Yesterday's kitchen analogy was slightly flawed, because I thought of each of the threads in the warp as units of work, as opposed to the workers themselves. It would be more apt to deliver workers than burgers.
 - So, an improved analogy might be a military operation:
 
@@ -318,7 +387,7 @@ Common pitfalls:
       - `1536 max threads per SM / 16 max blocks per SM = 96 threads per block`
       - If i pick anything under `96 threads per block`, I'm leaving threads on the table
 
-## Advanced Analogy:
+### Advanced Analogy:
 - Latency hiding is kind of a thing only because ALUs are shared. If every warp had its own ALU, then WARP B wouldn't be able to hide its latency while it waits for memory. Also instruction fetch, and memory pipelines.
 - Each cycle in different memory movement is made of essential steps that are all quite fast in themselves. i.e. a 400 cycle DRAM read is NOT just 399 cycles of prep and 1 cycle of movement, its more like very few steps each quite expensive due to off-chip travel, queuing, arbitration,and DRAM row activations.
 - Remember that warps all happen at the same time
@@ -447,59 +516,8 @@ So mechanically how shared memory works is pretty awesome. Don't so much think o
 
 
 
-# FYI Typical orders of magnitude
-Say with me our daily mantra:
-- ON GPUS, MEMORY LATENCY DOMINATES **EVERYTHING**.
-- Arithemetic is cheap. 
-- Addressing is cheap.
-- Waiting is expensive
 
-- If you can recompute something instead of loading it: DO IT
-- Load once and re-use many times: DO IT
-
-## Arithmetic
-| Operation            | Approx cycles      | Notes                |
-| -------------------- | ------------------ | -------------------- |
-| FP32 FMA (`a*b + c`) | **1 cycle**        | Fully pipelined      |
-| FP32 add or mul      | 1 cycle            | Same                 |
-| Integer add          | 1 cycle            |                      |
-| Integer mul          | ~4 cycles          | Still cheap          |
-| Integer divide       | **very expensive** | Avoid in inner loops |
-
-## Addresses
-| Operation                      | Cost                  |
-| ------------------------------ | --------------------- |
-| Address add                    | 1 cycle               |
-| Address multiply (runtime)     | ~4 cycles             |
-| Compile-time constant multiply | **0 cycles** (folded) |
-
-Why compile time matters:
-ptr + (ty * 16 + k)   // folded, cheap
-ptr + (ty * TK + k)  // runtime multiply if TK not known
-
-
-## Memory
-- Register: ~1 cycle
-  - `Private to each thread`
-  - Each soldier carries and is given these, no sharing.
-- Shared mem: ~20-30 cycles
-  - `Shared between block` 
-  - Bunker cache brought in by the admin team. The whole block shares this.
-- L1/TEX (Texture): 30-50 cycles
-  - Warehouse for the 1 port
-  - `Shared per SM`
-
-`Shared by ALL SMs:`
-- L2: ~100 cycles
-  - Base storage center
-  - Hardware managed
-- DRAM: ~400-800 cycles
-  - Back in home country
-  - Off chip
-  - High latency, high bandwidth, so we want many requests at once here
-
-
-### Memory example
+## Examples
 ```cpp
 // Bad
 __global__ void bad(const float* A, float* out) {
@@ -526,5 +544,3 @@ __global__ void good(const float* A, float* out) {
     out[idx] = acc;
 }
 ```
-
-

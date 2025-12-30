@@ -13,6 +13,27 @@ I compiled both a dynamic fallback, and a faster precompiled version.
 - Occupancy: ~80%
 - DRAM Throughput: ~53%
 - Compute Trhoughput: ~27.4%
+- Bytes per row (block):
+  - My first guess
+    - Read: 
+      - N from global memory
+      - blockDim.x*(blockDim.x+1)/2 from shared memory
+    - Write:
+      - blockDim.x + blockDim.x*(blockDim.x+1)/2 into shared memory
+  - The actual correct answer:
+    - Global memory:
+      - Global writes = 1 float (`out[row]`)
+      - Global reads = N floats
+    - Shared memory:
+      - 1) After the loading - `s[tx] = acc`
+        - Writes: B floats (where B = blockDim.x)
+      - 2) Reduction loop:
+        - Each stride = `B/2 + B/4 + ... + 1 = (B-1)`
+        - `s[tx] += s[tx + stride] -> s[tx] = s[tx] + s[tx+stride]`
+          - 2 reads and 1 write
+      - Shared writes = `B + (B-1) = 2B - 1`
+      - Shared reads = `2*(B-1) = 2B - 2`
+  - 
 
 ### My inital thoughts:
 - Row reduction kernel is a lot of reads with very simple set of floating point maths
