@@ -228,7 +228,8 @@ Focus on:
 
 **Hardware shared memory limits:**
 
-* Shared memory per block: **49,152 bytes** (48 KB)
+* **Static** Shared memory per block: **49,152 bytes** (48 KB)
+  * There can be even more dynamic shmem allowed, and this all also depends on GPU architecture. See Hopper
 * Shared memory per SM: **102,400 bytes** (~100 KB)
 
 **Effects:**
