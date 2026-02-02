@@ -545,3 +545,22 @@ __global__ void good(const float* A, float* out) {
     out[idx] = acc;
 }
 ```
+
+## CUDA Software:
+- `Nvidia Driver`
+  - The operating system of the GPU
+  - Must be installed on any computer wanting to use nvidia GPU on any level
+  - Also provides for Vulkan and Direct3D
+  - Driver version numbers e.g. `r580`
+- `CUDA Toolkit`
+  - Set of libraries, headers, tools for writing buildig and analysing software
+  - I think of it like an SDK from a board? I might be wrong
+  - `CUDA Runtime`:
+    - A special case of one libraries in the toolkit
+    - Provides API and language extensions for common things like memcpy and malloc between devices and launching kernels.
+    - I Import this header all the time!
+
+## Resources from CUDA
+- [CC table per hardware](https://developer.nvidia.com/cuda/gpus)
+  - [Memory info per CC](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html#compute-capabilities-table-memory-information-per-compute-capability)
+- 
